@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.dunwugudao.replay.mapper.ck.LeaderPoolDailyMapper">
+
+    <delete id="deleteByTradeDate">
+        ALTER TABLE leader_pool_daily DELETE WHERE trade_date = #{tradeDate}
+    </delete>
+
+    <insert id="insertBatch">
+        INSERT INTO leader_pool_daily
+            (trade_date, ts_code, board_code, board_pos, role, score)
+        VALUES
+        <foreach collection="list" item="e" separator=",">
+            (#{e.tradeDate}, #{e.tsCode}, #{e.boardCode}, #{e.boardPos}, #{e.role}, #{e.score})
+        </foreach>
+    </insert>
+
+</mapper>

@@ -1,0 +1,109 @@
+# ============================================================================
+# 顿悟股道 · 复盘系统 —— 统一 Docker 编排（host 网络模式）
+# ----------------------------------------------------------------------------
+# 适用：单台 Docker 主机（当前 124.223.220.245 / 目标纯 Docker 环境均同构）。
+# 所有外部依赖（ClickHouse / openGauss）通过 .env 的 HOST:PORT 接入，
+# 迁移到另一套环境时只改 .env，无需改本文件 → 无痛迁移。
+#
+# 目录约定（本文件位于 docker-deploy/，与下列目录平级）：
+#   docker-deploy/        ← 本文件 + .env
+#   crawler-backend/      ← 爬虫工程（crawler-backend-new 同步而来）
+#   replay-backend/       ← 复盘计算层工程
+#   crawler-web/          ← 前端监控大屏
+# crawler-backend/akshare-bridge/ ← 财报桥接服务
+#
+# 构建顺序：先在宿主机用 maven 离线打出 jar（见部署文档），再 docker compose build。
+# 启动：docker compose up -d            # 不含 akshare-bridge
+#      docker compose --profile financial up -d   # 含 akshare-bridge
+# ============================================================================
+
+version: '3.8'
+
+services:
+  crawler-admin:
+    build:
+      context: ../crawler-backend/crawler-admin
+      dockerfile: Dockerfile
+    image: crawler-admin:latest
+    container_name: crawler-admin
+    network_mode: host
+    environment:
+      - TZ=Asia/Shanghai
+      - SERVER_PORT=8081
+      # 操作型库 openGauss（@Primary）
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://${OG_HOST}:${OG_PORT}/${OG_DB}
+      - SPRING_DATASOURCE_USERNAME=${OG_USER}
+      - SPRING_DATASOURCE_PASSWORD=${OG_PASSWORD}
+      # 分析型库 ClickHouse
+      - SPRING_DATASOURCE_CH_JDBC_URL=jdbc:clickhouse://${CK_HOST}:${CK_PORT}/crawler?compress=0&use_server_time_zone=false&rewrite_batch_inserts=true
+      - SPRING_DATASOURCE_CH_USERNAME=${CK_USER}
+      - SPRING_DATASOURCE_CH_PASSWORD=${CK_PASSWORD}
+      # XXL-JOB 调度中心（admin 控制面，host 进程监听 8080）
+      - XXL_JOB_ADMIN_ADDRESSES=http://${HOST_IP}:8080/
+      # akshare-bridge 财报桥（financial 表回填开关；同机 host 网络，localhost:8800 即可）
+      - AKSHARE_BRIDGE_ENABLED=true
+      - AKSHARE_BRIDGE_URL=http://localhost:8800
+    restart: unless-stopped
+
+  crawler-worker:
+    build:
+      context: ../crawler-backend/crawler-worker
+      dockerfile: Dockerfile
+    image: crawler-worker:latest
+    container_name: crawler-worker
+    network_mode: host
+    environment:
+      - TZ=Asia/Shanghai
+      # 默认 8080 与 xxl-job 冲突，改到 8082
+      - SERVER_PORT=8082
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://${OG_HOST}:${OG_PORT}/${OG_DB}
+      - SPRING_DATASOURCE_USERNAME=${OG_USER}
+      - SPRING_DATASOURCE_PASSWORD=${OG_PASSWORD}
+      - SPRING_DATASOURCE_CH_JDBC_URL=jdbc:clickhouse://${CK_HOST}:${CK_PORT}/crawler?compress=0&use_server_time_zone=false&rewrite_batch_inserts=true
+      - SPRING_DATASOURCE_CH_USERNAME=${CK_USER}
+      - SPRING_DATASOURCE_CH_PASSWORD=${CK_PASSWORD}
+    restart: unless-stopped
+
+  replay-backend:
+    build:
+      context: ../replay-backend
+      dockerfile: Dockerfile
+    image: replay-backend:latest
+    container_name: replay-backend
+    network_mode: host
+    environment:
+      - TZ=Asia/Shanghai
+      - SERVER_PORT=8090
+      - SPRING_DATASOURCE_OG_JDBC_URL=jdbc:postgresql://${OG_HOST}:${OG_PORT}/${OG_DB}
+      - SPRING_DATASOURCE_OG_USERNAME=${OG_USER}
+      - SPRING_DATASOURCE_OG_PASSWORD=${OG_PASSWORD}
+      - SPRING_DATASOURCE_CH_JDBC_URL=jdbc:clickhouse://${CK_HOST}:${CK_PORT}/crawler?compress=0&use_server_time_zone=false&rewrite_batch_inserts=true
+      - SPRING_DATASOURCE_CH_USERNAME=${CK_USER}
+      - SPRING_DATASOURCE_CH_PASSWORD=${CK_PASSWORD}
+    restart: unless-stopped
+
+  crawler-web:
+    build:
+      context: ../crawler-web
+      dockerfile: Dockerfile
+    image: crawler-web:latest
+    container_name: crawler-web
+    network_mode: host
+    environment:
+      - TZ=Asia/Shanghai
+    restart: unless-stopped
+
+  # 财报桥接（可选）：仅启用 akshare.bridge 回填财务表时需要。
+  # 默认不随 up -d 启动；用 --profile financial 拉起。
+  akshare-bridge:
+    build:
+      context: ../crawler-backend/akshare-bridge
+      dockerfile: Dockerfile
+    image: akshare-bridge:latest
+    container_name: akshare-bridge
+    network_mode: host
+    environment:
+      - TZ=Asia/Shanghai
+    restart: unless-stopped
+    profiles:
+      - financial

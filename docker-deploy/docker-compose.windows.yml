@@ -1,0 +1,135 @@
+# ============================================================================
+# 顿悟股道 · 复盘系统 —— Windows Docker Desktop 编排（桥接 / bridge 网络）
+# ----------------------------------------------------------------------------
+# 适用：Windows 主机上的 Docker Desktop（用户明确使用桥接模式）。
+#
+# 与 Linux 版 docker-compose.yml（network_mode: host）的差异（务必了解）：
+#   1. Windows Docker Desktop【不支持】network_mode: host（host 网络是 Linux 专属）。
+#      改用：自定义桥接网络 stock-net + ports 端口映射 + 容器间服务名 DNS。
+#   2. 容器互访用「服务名」而非 127.0.0.1：
+#        - crawler-web 的 nginx 反代 → http://crawler-admin:8081   （见 nginx.windows.conf）
+#        - crawler-admin 调 akshare-bridge → http://akshare-bridge:8800
+#        - xxl-job 控制面 → http://host.docker.internal:8080
+#          （host.docker.internal 是 Docker Desktop 访问宿主机专用名；
+#           若 xxl-job 也是本机容器并映射了 8080，则可达）
+#   3. CK 库名由 .env 的 CK_DB 控制（新环境为 crawler），JDBC URL 统一用 /${CK_DB}。
+#      建表 DDL 与 Mapper 均不带库名前缀，靠默认库名解析，故代码无需改动。
+#   4. 【本编排不内置数据库】ClickHouse 与 openGauss 均假定已在宿主机 / DMZ 预先安装好，
+#      由 .env 的 CK_*/OG_* 指向其实际 HOST:PORT（见 .env.example）。本文件不再拉起数据库容器。
+#
+# 迁移：把 .env 的 CK_*/OG_*/HOST_IP/CK_DB 改成新环境值即可，本文件不改动。
+#
+# 启动：
+#   docker compose -f docker-compose.windows.yml up -d                 # 不含 akshare-bridge
+#   docker compose -f docker-compose.windows.yml --profile financial up -d   # 含财报桥
+# ============================================================================
+
+version: '3.8'
+
+networks:
+  stock-net:
+    driver: bridge
+
+services:
+  crawler-admin:
+    build:
+      context: ../crawler-backend/crawler-admin
+      dockerfile: Dockerfile
+    image: crawler-admin:latest
+    container_name: crawler-admin
+    networks: [stock-net]
+    ports:
+      - "8081:8081"
+    environment:
+      - TZ=Asia/Shanghai
+      - SERVER_PORT=8081
+      # 操作型库 openGauss（@Primary）
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://${OG_HOST}:${OG_PORT}/${OG_DB}?sslmode=disable
+      - SPRING_DATASOURCE_USERNAME=${OG_USER}
+      - SPRING_DATASOURCE_PASSWORD=${OG_PASSWORD}
+      # 分析型库 ClickHouse（库名走 ${CK_DB}，新环境 crawler）
+      - SPRING_DATASOURCE_CH_JDBC_URL=jdbc:clickhouse://${CK_HOST}:${CK_PORT}/${CK_DB}?compress=0&use_server_time_zone=false&rewrite_batch_inserts=true
+      - SPRING_DATASOURCE_CH_USERNAME=${CK_USER}
+      - SPRING_DATASOURCE_CH_PASSWORD=${CK_PASSWORD}
+      # XXL-JOB 调度中心（Windows 上建议用 host.docker.internal 指向宿主机 8080）
+      - XXL_JOB_ADMIN_ADDRESSES=http://${HOST_IP}:8080/
+      # akshare-bridge 财报桥（同桥接网络，用服务名 akshare-bridge）
+      - AKSHARE_BRIDGE_ENABLED=true
+      - AKSHARE_BRIDGE_URL=http://akshare-bridge:8800
+    restart: unless-stopped
+
+  crawler-worker:
+    build:
+      context: ../crawler-backend/crawler-worker
+      dockerfile: Dockerfile
+    image: crawler-worker:latest
+    container_name: crawler-worker
+    networks: [stock-net]
+    ports:
+      - "8082:8082"
+      - "9999:9999"   # xxl-job executor 回调端口（如启用 xxl-job）
+    environment:
+      - TZ=Asia/Shanghai
+      - SERVER_PORT=8082
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://${OG_HOST}:${OG_PORT}/${OG_DB}?sslmode=disable
+      - SPRING_DATASOURCE_USERNAME=${OG_USER}
+      - SPRING_DATASOURCE_PASSWORD=${OG_PASSWORD}
+      - SPRING_DATASOURCE_CH_JDBC_URL=jdbc:clickhouse://${CK_HOST}:${CK_PORT}/${CK_DB}?compress=0&use_server_time_zone=false&rewrite_batch_inserts=true
+      - SPRING_DATASOURCE_CH_USERNAME=${CK_USER}
+      - SPRING_DATASOURCE_CH_PASSWORD=${CK_PASSWORD}
+    restart: unless-stopped
+
+  replay-backend:
+    build:
+      context: ../replay-backend
+      dockerfile: Dockerfile
+    image: replay-backend:latest
+    container_name: replay-backend
+    networks: [stock-net]
+    ports:
+      - "8090:8090"
+    environment:
+      - TZ=Asia/Shanghai
+      - SERVER_PORT=8090
+      - SPRING_DATASOURCE_OG_JDBC_URL=jdbc:postgresql://${OG_HOST}:${OG_PORT}/${OG_DB}?sslmode=disable
+      - SPRING_DATASOURCE_OG_USERNAME=${OG_USER}
+      - SPRING_DATASOURCE_OG_PASSWORD=${OG_PASSWORD}
+      - SPRING_DATASOURCE_CH_JDBC_URL=jdbc:clickhouse://${CK_HOST}:${CK_PORT}/${CK_DB}?compress=0&use_server_time_zone=false&rewrite_batch_inserts=true
+      - SPRING_DATASOURCE_CH_USERNAME=${CK_USER}
+      - SPRING_DATASOURCE_CH_PASSWORD=${CK_PASSWORD}
+    restart: unless-stopped
+
+  crawler-web:
+    build:
+      context: ../crawler-web
+      dockerfile: Dockerfile.windows
+    image: crawler-web:latest
+    container_name: crawler-web
+    networks: [stock-net]
+    ports:
+      - "8091:8091"
+    environment:
+      - TZ=Asia/Shanghai
+    restart: unless-stopped
+
+  # 财报桥接（可选）：仅启用 akshare.bridge 回填财务表时需要。
+  akshare-bridge:
+    build:
+      context: ../crawler-backend/akshare-bridge
+      dockerfile: Dockerfile
+    image: akshare-bridge:latest
+    container_name: akshare-bridge
+    networks: [stock-net]
+    ports:
+      - "8800:8800"
+    environment:
+      - TZ=Asia/Shanghai
+    restart: unless-stopped
+    profiles:
+      - financial
+
+  # ------------------------------------------------------------------
+  # openGauss / ClickHouse 均不在本编排内：
+  #   二者已在宿主机 / DMZ 预先安装好，由 .env 的 OG_* / CK_* 指向实际 HOST:PORT。
+  #   不要再给本文件加数据库服务；若未建表，见 runbook 的「初始化已安装的数据库」步骤。
+  # ------------------------------------------------------------------

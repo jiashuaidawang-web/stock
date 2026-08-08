@@ -1,0 +1,24 @@
+{
+  "name": "crawler-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "股票分布式爬虫监控大屏（Vue3 + Vite + Element-Plus + ECharts）",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "vue": "^3.4.27",
+    "vue-router": "^4.3.2",
+    "element-plus": "^2.7.5",
+    "@element-plus/icons-vue": "^2.3.1",
+    "axios": "^1.7.2",
+    "echarts": "^5.5.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.0.4",
+    "vite": "^5.2.11"
+  }
+}

@@ -1,0 +1,5 @@
+# Windows Docker Desktop 版前端镜像（与 Dockerfile 区别仅在于复制桥接网络用的 nginx 配置）
+FROM nginx:1.27-alpine
+COPY nginx.windows.conf /etc/nginx/conf.d/default.conf
+COPY dist /usr/share/nginx/html
+EXPOSE 8091
